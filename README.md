@@ -5,7 +5,6 @@ Then go to something like
 
 http://localhost:8000/notes.html
 
-<a href="bw8.html">BW8</a>
+<a href="bw10.html">BW</a>
 
-https://mattbellis.github.io/Boomwhacker_hero/bw8.html
 
