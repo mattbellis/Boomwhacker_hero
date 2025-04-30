@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Boomwhacker Hero – Song Library & Title Display</title>
+  <style>
+    body { margin: 0; background: #000; }
+    canvas { display: block; }
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(255,255,255,0.9);
+      padding: 10px;
+      border-radius: 5px;
+      font-family: sans-serif;
+      z-index: 10;
+      width: 200px;
+    }
+    #controls > * {
+      display: block;
+      margin-bottom: 8px;
+    }
+    #songSelect {
+      width: 100%;
+    }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <label for="songSelect">Choose Song:</label>
+    <select id="songSelect"><option>Loading…</option></select>
+    <button id="startSongButton">Start Song</button>
+    <button id="soundToggle">Sound: ON</button>
+    <label for="speedSlider">Speed Multiplier:</label>
+    <input type="range" id="speedSlider" min="0.5" max="4" step="0.1" value="1">
+    <span id="speedValue">1.0</span>
+  </div>
+  <canvas id="gameCanvas"></canvas>
+  <script>
+    // ===== Globals =====
+    let notes = [];          // {name, frequency, color}
+    let songTitle = "";      // from first line of song CSV
+    let songBPM = 60;
+    let songMapping = [];    // array of note objects
+    let songData = [];       // array of tick arrays
+    let columns = 0;
+
+    const circleRadius = 15;
+    let circles = [];
+
+    let currentSongTick = 0;
+    let songTimer = null;
+
+    let baseDropSpeed = 0;
+    let speedMultiplier = 1;
+    let dropSpeed = 0;
+
+    const leftMargin = 220;
+    const topMargin = 60;
+    let cueLineY = 0;
+    let spawnY = 0;
+
+    // ===== Canvas Setup =====
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    function resizeCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      cueLineY = canvas.height * 2/3;
+      spawnY = topMargin;
+      if (songBPM) {
+        const qn = 60 / songBPM;
+        baseDropSpeed = 50 / qn;
+        dropSpeed = baseDropSpeed * speedMultiplier;
+      }
+    }
+    window.addEventListener("resize", resizeCanvas);
+    resizeCanvas();
+
+    // ===== Circle Class =====
+    class Circle {
+      constructor(i) {
+        this.note = songMapping[i];
+        const w = canvas.width - leftMargin;
+        this.x = leftMargin + (i + .5) * (w/columns);
+        this.y = spawnY;
+        this.radius = circleRadius;
+        this.played = false;
+      }
+      update(dt) {
+        this.y += dropSpeed * dt;
+        if (this.y >= cueLineY -10 && this.y <= cueLineY +10) {
+          this.radius = circleRadius*1.5;
+          if (!this.played) { playNote(this.note); this.played = true; }
+        } else {
+          this.radius = circleRadius;
+        }
+      }
+      draw() {
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.radius,0,Math.PI*2);
+        ctx.fillStyle = this.note.color;
+        ctx.fill();
+        ctx.closePath();
+        ctx.fillStyle = "#FFF";
+        ctx.font = "12px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(this.note.name, this.x, this.y+this.radius+15);
+      }
+    }
+
+    // ===== Draw Headers & Title =====
+    function drawColumnHeaders() {
+      const w = canvas.width - leftMargin;
+      for (let i=0;i<columns;i++) {
+        const x = leftMargin + (i + .5)*(w/columns);
+        // note name
+        ctx.fillStyle="#FFF";
+        ctx.font="16px sans-serif";
+        ctx.textAlign="center";
+        ctx.fillText(songMapping[i].name, x, topMargin-15);
+        // stationary color circle
+        ctx.beginPath();
+        ctx.arc(x, topMargin, 10,0,Math.PI*2);
+        ctx.fillStyle = songMapping[i].color;
+        ctx.fill();
+        ctx.closePath();
+      }
+    }
+    function drawSongTitle() {
+      if (!songTitle) return;
+      ctx.fillStyle="#FFF";
+      ctx.font="18px sans-serif";
+      ctx.textAlign="center";
+      const x = leftMargin + (canvas.width - leftMargin)/2;
+      ctx.fillText(songTitle, x, cueLineY + 30);
+    }
+
+    // ===== Audio =====
+    const audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    let soundEnabled = true;
+    function playNote(note){
+      if(!soundEnabled||!note) return;
+      const osc = audioCtx.createOscillator(),
+            gain = audioCtx.createGain();
+      osc.frequency.value = note.frequency;
+      osc.type = "sine";
+      gain.gain.setValueAtTime(0,audioCtx.currentTime);
+      gain.gain.linearRampToValueAtTime(0.5,audioCtx.currentTime+0.01);
+      gain.gain.linearRampToValueAtTime(0,audioCtx.currentTime+0.25);
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.start(); osc.stop(audioCtx.currentTime+0.25);
+    }
+
+    // ===== Game Loop =====
+    let last=performance.now();
+    function loop(ts){
+      const dt=(ts-last)/1000; last=ts;
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      drawColumnHeaders();
+      // cue line
+      ctx.beginPath();
+      ctx.moveTo(leftMargin, cueLineY);
+      ctx.lineTo(canvas.width, cueLineY);
+      ctx.strokeStyle="#FFF"; ctx.lineWidth=2; ctx.stroke(); ctx.closePath();
+      // circles
+      circles.forEach(c=>{c.update(dt);c.draw();});
+      circles = circles.filter(c=> c.y-c.radius<canvas.height );
+      drawSongTitle();
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+
+    // ===== Song Tick =====
+    function tickSong(){
+      if(currentSongTick>=songData.length){
+        clearInterval(songTimer);
+        songTimer=null;
+        startBtn.textContent="Start Song";
+        return;
+      }
+      const row=songData[currentSongTick];
+      row.forEach((val,i)=>{ if(val==="1") circles.push(new Circle(i)); });
+      currentSongTick++;
+    }
+
+    // ===== Controls =====
+    const speedSlider = document.getElementById("speedSlider"),
+          speedValue = document.getElementById("speedValue"),
+          soundBtn     = document.getElementById("soundToggle"),
+          startBtn     = document.getElementById("startSongButton");
+    speedSlider.oninput =()=>{
+      speedMultiplier=parseFloat(speedSlider.value);
+      speedValue.textContent=speedMultiplier.toFixed(1);
+      dropSpeed=baseDropSpeed*speedMultiplier;
+    };
+    soundBtn.onclick=()=>{
+      soundEnabled=!soundEnabled;
+      soundBtn.textContent=`Sound: ${soundEnabled?"ON":"OFF"}`;
+    };
+    startBtn.onclick=()=>{
+      if(songTimer){
+        clearInterval(songTimer);
+        songTimer=null;
+        circles=[];
+        startBtn.textContent="Start Song";
+      } else {
+        if(!songLoaded){ alert("Please choose a song."); return; }
+        currentSongTick=0;
+        const period=60/songBPM;
+        songTimer=setInterval(tickSong, period*1000);
+        startBtn.textContent="Stop Song";
+      }
+    };
+
+    // ===== Load note definitions =====
+    fetch("notes_and_colors.csv")
+      .then(r=>r.text())
+      .then(t=>{
+        t.split("\n").forEach(l=>{
+          l=l.trim(); if(!l) return;
+          const p=l.split(",").map(x=>x.trim());
+          if(p.length<3) return;
+          const nm=p[0].replace(/^\uFEFF/,""),
+                freq=parseFloat(p[1]),
+                cm=p[2].match(/#[0-9A-Fa-f]{6}/),
+                col=cm?cm[0]:"#FFF";
+          notes.push({name:nm,frequency:freq,color:col});
+        });
+      });
+
+    // ===== Load song list from GitHub =====
+    const songSelect = document.getElementById("songSelect");
+    let songLoaded=false;
+    fetch("https://api.github.com/repos/mattbellis/Boomwhacker_hero/contents")
+      .then(r=>r.json())
+      .then(files=>{
+        songSelect.innerHTML="";
+        files.filter(f=>f.name.endsWith(".csv")).forEach(f=>{
+          const opt = new Option(f.name,f.download_url);
+          songSelect.add(opt);
+        });
+      });
+
+    // ===== Fetch chosen song =====
+        // ===== Load Chosen Song (with comment-skip) =====
+    songSelect.onchange = () => {
+      fetch(songSelect.value)
+        .then(r => r.text())
+        .then(txt => {
+          // 1) Split into lines, trim, remove blank & comment lines:
+          const lines = txt.split("\n")
+            .map(l => l.trim())
+            .filter(l => l.length > 0 && !l.startsWith("#"));
+
+          if (lines.length < 5) {
+            alert("Invalid song format!");
+            return;
+          }
+
+          // 2) Parse in order:
+          songTitle = lines[0];              // title / artist
+          // lines[1] = time signature (ignored)
+          songBPM    = parseFloat(lines[2]); // BPM
+          // line 3 = comma list of column note names
+          const mappingNames = lines[3].split(",").map(n => n.trim());
+          songMapping = mappingNames.map(nm => {
+            const d = notes.find(x => x.name === nm);
+            return d || { name: nm, frequency: 440, color: "#FFFFFF" };
+          });
+          columns = songMapping.length;
+
+          // 3) Remaining lines = actual tick data:
+          songData = lines.slice(4).map(l => l.split(",").map(x => x.trim()));
+
+          // 4) Recompute drop speed:
+          const quarterNotePeriod = 60 / songBPM;
+          baseDropSpeed = 50 / quarterNotePeriod;
+          dropSpeed = baseDropSpeed * speedMultiplier;
+
+          songLoaded = true;
+        });
+    };
+
+    // ===== Song Tick (now auto-loops) =====
+    function tickSong() {
+      // wrap at end instead of stopping
+      if (currentSongTick >= songData.length) {
+        currentSongTick = 0;
+      }
+      const row = songData[currentSongTick];
+      row.forEach((v, i) => {
+        if (v === "1") circles.push(new Circle(i));
+      });
+      currentSongTick++;
+    }
+
+    // ===== Start/Stop Button =====
+    startBtn.onclick = () => {
+      if (songTimer) {
+        clearInterval(songTimer);
+        songTimer = null;
+        circles = [];
+        startBtn.textContent = "Start Song";
+      } else {
+        if (!songLoaded) {
+          alert("Please choose a song.");
+          return;
+        }
+        currentSongTick = 0;
+        const period = 60 / songBPM;
+        songTimer = setInterval(tickSong, period * 1000);
+        startBtn.textContent = "Stop Song";
+      }
+    };
+
+  </script>
+</body>
+</html>
+
